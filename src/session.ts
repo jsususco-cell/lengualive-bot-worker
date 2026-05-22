@@ -19,6 +19,9 @@ import { translate } from './translate.js';
 
 export class Session {
   readonly id = randomUUID();
+  /** Per-session secret: lets a browser open the stream WebSocket
+   *  without ever being handed the master WORKER_API_TOKEN. */
+  readonly streamToken = randomUUID();
   readonly startedAt = new Date().toISOString();
   readonly meetingUrl: string;
   readonly platform: string;

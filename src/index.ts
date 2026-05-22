@@ -65,7 +65,11 @@ app.post('/sessions', (req, res) => {
     targetLang: body.targetLang,
     botName: body.botName,
   });
-  res.status(201).json({ sessionId: session.id, ...session.summary });
+  res.status(201).json({
+    sessionId: session.id,
+    streamToken: session.streamToken,
+    ...session.summary,
+  });
 });
 
 // ── List all sessions. ──
@@ -107,17 +111,26 @@ server.on('upgrade', (request, socket, head) => {
   }
 
   const match = url.pathname.match(/^\/sessions\/([^/]+)\/stream$/);
-  const token = url.searchParams.get('token');
-
-  if (!match || token !== WORKER_API_TOKEN) {
-    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+  if (!match) {
+    socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
     socket.destroy();
     return;
   }
 
   const sessionId = match[1];
-  if (!manager.get(sessionId)) {
+  const session = manager.get(sessionId);
+  if (!session) {
     socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  // Accept either the master token (server-to-server) or this session's
+  // stream token (handed to the browser) — so the master secret never
+  // has to reach a browser.
+  const token = url.searchParams.get('token');
+  if (token !== WORKER_API_TOKEN && token !== session.streamToken) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
     socket.destroy();
     return;
   }
