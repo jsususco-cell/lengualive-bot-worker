@@ -1,0 +1,5 @@
+# This repo builds a Linux Docker image. Force LF on every text file so a
+# Windows checkout (core.autocrlf=true) cannot rewrite shell scripts with
+# CRLF — a CRLF entrypoint.sh breaks the container ("bad interpreter").
+* text=auto eol=lf
+*.sh text eol=lf
