@@ -11,6 +11,7 @@
 import { chromium, type Browser, type Page, type Locator } from 'playwright';
 import type { MeetingBot, BotOptions } from './types.js';
 import { screenshotPath } from '../paths.js';
+import { applyGoogleSession } from '../googleSession.js';
 
 // How long to wait for the host to admit the bot.
 const ADMIT_TIMEOUT_MS = 2 * 60 * 1000;
@@ -56,6 +57,14 @@ export class GoogleMeetBot implements MeetingBot {
         // keeps Meet from showing its "unsupported browser" downgrade.
         locale: 'en-US',
       });
+
+      // Inject the saved Google session, if one is configured. Meet
+      // refuses anonymous bots, so this is what actually gets us in.
+      const signedIn = await applyGoogleSession(context);
+      this.log(signedIn
+        ? 'loaded a saved Google session — joining signed-in'
+        : 'no Google session configured — joining anonymously');
+
       const page = await context.newPage();
       this.page = page;
 
