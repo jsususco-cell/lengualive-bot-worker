@@ -1,0 +1,12 @@
+# Local run: `docker compose up --build`.
+# Reads secrets from .env (copy .env.example first).
+services:
+  bot-worker:
+    build: .
+    ports:
+      - "${PORT:-8080}:8080"
+    env_file:
+      - .env
+    restart: unless-stopped
+    # Chromium needs more shared memory than Docker's 64 MB default.
+    shm_size: "1gb"

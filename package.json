@@ -1,0 +1,30 @@
+{
+  "name": "lengualive-bot-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Meeting-bot worker for LenguaLive — sends a bot into a live meeting, captures the audio, and transcribes + translates it in real time.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": ">=0.40.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "playwright": "^1.49.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.5",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

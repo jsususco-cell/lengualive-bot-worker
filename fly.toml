@@ -1,0 +1,29 @@
+# Fly.io deployment config for the LenguaLive bot-worker.
+# Deploy with:  fly launch --no-deploy   (first time, to create the app)
+#               fly secrets set WORKER_API_TOKEN=... DEEPGRAM_API_KEY=... ANTHROPIC_API_KEY=...
+#               fly deploy
+#
+# This runs ONE always-on machine. Each machine handles one meeting bot
+# at a time in this MVP — scaling to concurrent meetings means running
+# more machines (see ARCHITECTURE.md → "Scaling").
+
+app = "lengualive-bot-worker"
+primary_region = "iad"
+
+[build]
+
+[env]
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Keep the machine alive — a meeting bot must not be stopped mid-call.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  # Chromium + audio stack is memory-hungry; start here and adjust.
+  size = "shared-cpu-2x"
+  memory = "2gb"
