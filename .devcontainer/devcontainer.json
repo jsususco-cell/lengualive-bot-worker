@@ -1,0 +1,10 @@
+{
+	"name": "Flyctl Codespaces",
+	"image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+	"features": {
+		"ghcr.io/devcontainers-extra/features/gh-release:1": {
+			"repo": "superfly/flyctl",
+			"binaryNames": "fly"
+		}
+	}
+}
