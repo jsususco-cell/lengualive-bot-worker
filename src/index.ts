@@ -15,10 +15,12 @@
 // `?token=` query param (browsers can't set WS headers).
 
 import 'dotenv/config';
+import { existsSync } from 'node:fs';
 import { createServer } from 'node:http';
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import { SessionManager } from './sessionManager.js';
+import { screenshotPath } from './paths.js';
 import type { StartSessionRequest } from './types.js';
 
 const PORT = Number(process.env.PORT || 8080);
@@ -65,6 +67,7 @@ app.post('/sessions', (req, res) => {
     targetLang: body.targetLang,
     botName: body.botName,
   });
+  console.log(`[http] session ${session.id.slice(0, 8)} created for ${body.meetingUrl}`);
   res.status(201).json({
     sessionId: session.id,
     streamToken: session.streamToken,
@@ -85,6 +88,20 @@ app.get('/sessions/:id', (req, res) => {
     return;
   }
   res.json(session.summary);
+});
+
+// ── A bot's on-failure diagnostic screenshot, if one was captured. ──
+app.get('/sessions/:id/screenshot', (req, res) => {
+  if (!manager.get(req.params.id)) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  const file = screenshotPath(req.params.id);
+  if (!existsSync(file)) {
+    res.status(404).json({ error: 'No screenshot for this session' });
+    return;
+  }
+  res.sendFile(file);
 });
 
 // ── Stop one session (the bot leaves the meeting). ──

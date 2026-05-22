@@ -71,6 +71,7 @@ export class Session {
       meetingUrl: this.meetingUrl,
       displayName,
       audioSink,
+      sessionId: this.id,
       callbacks: {
         onWaitingAdmit: () => this.setState('waiting-admit'),
         onAdmitted: () => {
@@ -122,12 +123,14 @@ export class Session {
 
   private setState(state: SessionState): void {
     this.state = state;
+    console.log(`[session ${this.id.slice(0, 8)}] state → ${state}`);
     this.emit({ type: 'state', state });
   }
 
   private fail(message: string): void {
     this.errorMessage = message;
     this.state = 'error';
+    console.error(`[session ${this.id.slice(0, 8)}] FAILED: ${message}`);
     this.emit({ type: 'state', state: 'error', error: message });
     this.emit({ type: 'error', message });
     this.cleanup();

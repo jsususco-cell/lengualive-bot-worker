@@ -2,17 +2,20 @@
 // Drives a real Chromium (via Playwright, running "headed" inside a
 // virtual X display) into a Google Meet call as a guest.
 //
-// ⚠️  The DOM selectors below are the FRAGILE part of this whole
-// service. Google ships UI changes to Meet regularly and does not
-// publish a bot API, so every selector marked `TODO(selector)` must
-// be verified — and re-verified — against the live page. Expect to
-// adjust these the first time you run against a real meeting.
+// ⚠️  Google Meet has no bot API; this automates the live web UI.
+// Selectors use getByRole — resilient to Google's obfuscated class
+// names — but still depend on the UI's accessible labels. On ANY
+// failure the bot logs the page title/text and writes a screenshot
+// (see capturePageState) so a blind timeout becomes a real diagnosis.
 
-import { chromium, type Browser, type Page } from 'playwright';
+import { chromium, type Browser, type Page, type Locator } from 'playwright';
 import type { MeetingBot, BotOptions } from './types.js';
+import { screenshotPath } from '../paths.js';
 
-// How long to wait for the host to admit the bot before giving up.
+// How long to wait for the host to admit the bot.
 const ADMIT_TIMEOUT_MS = 2 * 60 * 1000;
+// How long to wait for a pre-join element (name field, join button).
+const ELEMENT_TIMEOUT_MS = 20_000;
 
 export class GoogleMeetBot implements MeetingBot {
   readonly platform = 'google-meet';
@@ -23,20 +26,22 @@ export class GoogleMeetBot implements MeetingBot {
 
   constructor(private readonly opts: BotOptions) {}
 
+  private log(msg: string): void {
+    console.log(`[meet ${this.opts.sessionId.slice(0, 8)}] ${msg}`);
+  }
+
   async join(): Promise<void> {
     const { meetingUrl, displayName, callbacks } = this.opts;
 
     try {
+      this.log('launching Chromium');
       this.browser = await chromium.launch({
-        // Headed (inside Xvfb): Meet detects true headless and behaves
-        // differently, so we render to a virtual display instead.
+        // Headed inside Xvfb — Meet behaves differently under true headless.
         headless: false,
         args: [
           '--no-sandbox',
           '--disable-dev-shm-usage',
-          // Auto-accept the mic/camera permission prompt.
           '--use-fake-ui-for-media-stream',
-          // Provide a fake mic/cam so getUserMedia succeeds with no hardware.
           '--use-fake-device-for-media-stream',
           '--autoplay-policy=no-user-gesture-required',
           '--window-size=1280,720',
@@ -46,63 +51,125 @@ export class GoogleMeetBot implements MeetingBot {
       const context = await this.browser.newContext({
         permissions: ['microphone', 'camera'],
         viewport: { width: 1280, height: 720 },
+        // Pin locale so Meet's UI text — and our selectors — stay English.
+        locale: 'en-US',
+        userAgent:
+          'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 ' +
+          '(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
       });
       const page = await context.newPage();
       this.page = page;
 
+      this.log(`navigating to ${meetingUrl}`);
       await page.goto(meetingUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 });
 
-      // ── Enter the bot's display name (guest join). ──
-      // TODO(selector): Meet's pre-join name field.
-      const nameInput = page
-        .locator('input[aria-label="Your name"], input[placeholder="Your name"]')
-        .first();
+      // A fresh browser hitting a Google domain is often bounced through
+      // a cookie-consent interstitial first.
+      await this.dismissConsent();
+
+      this.log(`page ready: "${await page.title()}" @ ${page.url()}`);
+
+      // ── Guest name (best-effort — absent on sign-in-only meetings). ──
       try {
-        await nameInput.waitFor({ state: 'visible', timeout: 15_000 });
+        const nameInput = page.getByRole('textbox', { name: /your name/i }).first();
+        await nameInput.waitFor({ state: 'visible', timeout: ELEMENT_TIMEOUT_MS });
         await nameInput.fill(displayName);
+        this.log('filled the guest name');
       } catch {
-        // Sign-in-only meetings never show a guest name field. We carry
-        // on; if the bot truly can't join it surfaces as an admit timeout.
+        this.log('no guest-name field found (continuing anyway)');
       }
 
-      // ── Turn the microphone and camera OFF before joining. ──
-      // TODO(selector): pre-join mic/cam toggle buttons. Their aria-label
-      // text switches between "Turn off …" and "Turn on …" by state.
-      await this.tryClick('button[aria-label*="Turn off microphone"]');
-      await this.tryClick('button[aria-label*="Turn off camera"]');
+      // ── Turn the microphone and camera off before joining. ──
+      await this.tryClick(
+        page.getByRole('button', { name: /turn off microphone/i }), 'mic off');
+      await this.tryClick(
+        page.getByRole('button', { name: /turn off camera/i }), 'camera off');
 
-      // ── Click "Ask to join" / "Join now". ──
-      // TODO(selector): join button — label depends on the meeting policy.
+      // ── Join. ──
+      this.log('looking for the join button');
       const joinButton = page
-        .locator('button:has-text("Ask to join"), button:has-text("Join now")')
+        .getByRole('button', { name: /ask to join|join now|join meeting/i })
         .first();
-      await joinButton.waitFor({ state: 'visible', timeout: 15_000 });
+      await joinButton.waitFor({ state: 'visible', timeout: ELEMENT_TIMEOUT_MS });
       await joinButton.click();
-
+      this.log('clicked join — waiting to be admitted');
       callbacks.onWaitingAdmit?.();
 
-      // ── Wait to be admitted. ──
-      // The leave-call control only exists once we're actually inside.
-      // TODO(selector): in-meeting "Leave call" button.
-      const inMeeting = page.locator('button[aria-label*="Leave call"]').first();
-      await inMeeting.waitFor({ state: 'visible', timeout: ADMIT_TIMEOUT_MS });
-
+      // ── Wait for the host to admit the bot. ──
+      const leaveButton = page.getByRole('button', { name: /leave call/i }).first();
+      await leaveButton.waitFor({ state: 'visible', timeout: ADMIT_TIMEOUT_MS });
+      this.log('admitted — the bot is in the meeting');
       callbacks.onAdmitted?.();
+
       this.watchForEnd();
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to join the meeting';
-      this.opts.callbacks.onError?.(`Google Meet join failed: ${message}`);
+      const reason = err instanceof Error ? err.message.split('\n')[0] : 'join failed';
+      const diagnosis = await this.capturePageState();
+      const message = `Google Meet join failed: ${reason}${diagnosis}`;
+      this.log(message);
+      this.opts.callbacks.onError?.(message);
       await this.leave();
     }
   }
 
-  /** Click a selector if it is present; never throws. */
-  private async tryClick(selector: string): Promise<void> {
-    if (!this.page) return;
+  /** Snapshot what the page actually shows — turns a blind timeout into
+   *  a real diagnosis. Logs + screenshots, and returns a short suffix
+   *  appended to the error message (so it surfaces via GET /sessions/:id). */
+  private async capturePageState(): Promise<string> {
+    const page = this.page;
+    if (!page) return '';
     try {
-      await this.page.locator(selector).first().click({ timeout: 3000 });
+      const url = page.url();
+      const title = await page.title().catch(() => '(no title)');
+      let text = '';
+      try {
+        text = (await page.locator('body').innerText({ timeout: 3000 }))
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 280);
+      } catch {
+        /* body not readable */
+      }
+      try {
+        await page.screenshot({ path: screenshotPath(this.opts.sessionId) });
+        this.log('saved a diagnostic screenshot');
+      } catch {
+        /* screenshot failed — not fatal */
+      }
+      this.log(`page title: "${title}"`);
+      this.log(`page url:   ${url}`);
+      this.log(`page text:  ${text}`);
+      return ` | page="${title}" | shows="${text}"`;
     } catch {
-      // Not present / not clickable in the current state — that's fine.
+      return '';
+    }
+  }
+
+  /** Get past Google's cookie-consent interstitial, if we landed on it. */
+  private async dismissConsent(): Promise<void> {
+    const page = this.page;
+    if (!page || !page.url().includes('consent.')) return;
+    this.log('on the Google consent page — trying to accept');
+    for (const name of [/accept all/i, /i agree/i, /reject all/i]) {
+      try {
+        await page.getByRole('button', { name }).first().click({ timeout: 4000 });
+        await page.waitForLoadState('domcontentloaded', { timeout: 15_000 });
+        this.log('cleared the consent page');
+        return;
+      } catch {
+        /* try the next label */
+      }
+    }
+    this.log('could not clear the consent page');
+  }
+
+  /** Click a locator if present; never throws. */
+  private async tryClick(locator: Locator, label: string): Promise<void> {
+    try {
+      await locator.first().click({ timeout: 4000 });
+      this.log(`clicked: ${label}`);
+    } catch {
+      this.log(`skipped: ${label} (not found)`);
     }
   }
 
@@ -111,16 +178,16 @@ export class GoogleMeetBot implements MeetingBot {
     const check = async () => {
       if (!this.page || this.left) return;
       try {
-        // TODO(selector): Meet's post-call screen copy.
         const ended = this.page
-          .locator('text=/You.{0,3}ve left the meeting|removed from the meeting|meeting.{0,3}s ended/i')
+          .getByText(/you.{0,3}ve left the meeting|removed from the meeting|meeting.{0,3}s ended/i)
           .first();
         if (await ended.isVisible()) {
+          this.log('meeting ended / bot removed');
           this.opts.callbacks.onLeft?.();
           return;
         }
       } catch {
-        // Page may be mid-navigation — ignore and retry.
+        /* page may be mid-navigation */
       }
       setTimeout(check, 5000);
     };
@@ -132,15 +199,15 @@ export class GoogleMeetBot implements MeetingBot {
     this.left = true;
 
     if (this.page) {
-      // Best-effort graceful leave so the bot disappears from the roster.
-      await this.tryClick('button[aria-label*="Leave call"]');
+      await this.tryClick(
+        this.page.getByRole('button', { name: /leave call/i }), 'leave call');
     }
     this.page = null;
 
     try {
       await this.browser?.close();
     } catch {
-      // Already closed.
+      /* already closed */
     }
     this.browser = null;
   }

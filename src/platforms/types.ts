@@ -23,6 +23,8 @@ export interface BotOptions {
   displayName: string;
   /** PulseAudio sink Chromium should render into (matches AUDIO_SINK). */
   audioSink: string;
+  /** Owning session id — used for log prefixes and the screenshot path. */
+  sessionId: string;
   callbacks: BotCallbacks;
 }
 
