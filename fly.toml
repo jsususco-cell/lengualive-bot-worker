@@ -7,13 +7,13 @@
 # at a time in this MVP — scaling to concurrent meetings means running
 # more machines (see ARCHITECTURE.md → "Scaling").
 
-app = "lengualive-bot-worker"
-primary_region = "iad"
-
-[build]
+app = 'lengualive-bot-worker'
+primary_region = 'sin'
+kill_signal = 'SIGTERM'
+kill_timeout = '2m0s'
 
 [env]
-  PORT = "8080"
+  PORT = '8080'
 
 [http_service]
   internal_port = 8080
@@ -25,5 +25,5 @@ primary_region = "iad"
 
 [[vm]]
   # Chromium + audio stack is memory-hungry; start here and adjust.
-  size = "shared-cpu-2x"
-  memory = "2gb"
+  size = 'shared-cpu-2x'
+  memory = '2gb'
