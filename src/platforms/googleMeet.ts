@@ -52,10 +52,9 @@ export class GoogleMeetBot implements MeetingBot {
         permissions: ['microphone', 'camera'],
         viewport: { width: 1280, height: 720 },
         // Pin locale so Meet's UI text — and our selectors — stay English.
+        // Do NOT override userAgent: Chromium's real, current UA is what
+        // keeps Meet from showing its "unsupported browser" downgrade.
         locale: 'en-US',
-        userAgent:
-          'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 ' +
-          '(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
       });
       const page = await context.newPage();
       this.page = page;
