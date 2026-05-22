@@ -41,6 +41,12 @@ export class SessionManager {
     return [...this.sessions.values()].map((s) => s.summary);
   }
 
+  /** The recent event buffer for a session — lets the transcript be
+   *  inspected over plain HTTP, without opening the WebSocket. */
+  getEvents(id: string): SessionEvent[] {
+    return this.buffers.get(id) ?? [];
+  }
+
   /** Stop a session's bot. Returns false if the id is unknown. */
   async stop(id: string): Promise<boolean> {
     const session = this.sessions.get(id);

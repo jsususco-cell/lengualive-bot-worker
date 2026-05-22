@@ -104,6 +104,15 @@ app.get('/sessions/:id/screenshot', (req, res) => {
   res.sendFile(file);
 });
 
+// ── A session's recent events (state changes + transcript lines). ──
+app.get('/sessions/:id/events', (req, res) => {
+  if (!manager.get(req.params.id)) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  res.json({ events: manager.getEvents(req.params.id) });
+});
+
 // ── Stop one session (the bot leaves the meeting). ──
 app.delete('/sessions/:id', async (req, res) => {
   const stopped = await manager.stop(req.params.id);
