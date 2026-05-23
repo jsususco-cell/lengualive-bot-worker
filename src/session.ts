@@ -11,8 +11,9 @@
 
 import { randomUUID } from 'node:crypto';
 import type { SessionEvent, SessionState, SessionSummary, StartSessionRequest } from './types.js';
-import { detectPlatform, type MeetingBot } from './platforms/types.js';
+import { detectPlatform, type MeetingBot, type BotCallbacks, type BotOptions } from './platforms/types.js';
 import { GoogleMeetBot } from './platforms/googleMeet.js';
+import { MicrosoftTeamsBot } from './platforms/microsoftTeams.js';
 import { startAudioCapture, type AudioCapture } from './audio.js';
 import { DeepgramLiveClient } from './deepgram.js';
 import { translate } from './translate.js';
@@ -62,26 +63,31 @@ export class Session {
 
   /** Begin: dispatch the bot into the meeting. */
   async start(displayName: string, audioSink: string): Promise<void> {
-    if (this.platform !== 'google-meet') {
-      this.fail(`Unsupported platform "${this.platform}". Only Google Meet is implemented so far.`);
-      return;
-    }
-
-    this.bot = new GoogleMeetBot({
+    const callbacks: BotCallbacks = {
+      onWaitingAdmit: () => this.setState('waiting-admit'),
+      onAdmitted: () => {
+        this.setState('live');
+        this.startTranscription(audioSink);
+      },
+      onLeft: () => void this.stop(),
+      onError: (message) => this.fail(message),
+    };
+    const botOptions: BotOptions = {
       meetingUrl: this.meetingUrl,
       displayName,
       audioSink,
       sessionId: this.id,
-      callbacks: {
-        onWaitingAdmit: () => this.setState('waiting-admit'),
-        onAdmitted: () => {
-          this.setState('live');
-          this.startTranscription(audioSink);
-        },
-        onLeft: () => void this.stop(),
-        onError: (message) => this.fail(message),
-      },
-    });
+      callbacks,
+    };
+
+    if (this.platform === 'google-meet') {
+      this.bot = new GoogleMeetBot(botOptions);
+    } else if (this.platform === 'teams') {
+      this.bot = new MicrosoftTeamsBot(botOptions);
+    } else {
+      this.fail(`Unsupported platform "${this.platform}". Supported: google-meet, teams.`);
+      return;
+    }
 
     await this.bot.join();
   }

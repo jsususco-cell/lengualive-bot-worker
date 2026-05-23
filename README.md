@@ -5,8 +5,9 @@ cannot be: a long-running, Dockerized service that sends a bot into a
 live video meeting, captures the meeting audio, and transcribes +
 translates it in real time.
 
-Today it supports **Google Meet**. Zoom and Microsoft Teams are
-designed for but not yet implemented (see `src/platforms/`).
+Today it supports **Google Meet** and **Microsoft Teams** (anonymous
+guest join — sign-in support is a roadmap item). Zoom is designed for
+but not yet implemented (see `src/platforms/`).
 
 ---
 
