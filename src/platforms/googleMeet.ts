@@ -1,22 +1,40 @@
 // ─── Google Meet bot ────────────────────────────────────────────
 // Drives a real Chromium (via Playwright, running "headed" inside a
-// virtual X display) into a Google Meet call as a guest.
+// virtual X display) into a Google Meet call.
 //
 // ⚠️  Google Meet has no bot API; this automates the live web UI.
-// Selectors use getByRole — resilient to Google's obfuscated class
-// names — but still depend on the UI's accessible labels. On ANY
-// failure the bot logs the page title/text and writes a screenshot
-// (see capturePageState) so a blind timeout becomes a real diagnosis.
+// Selectors live in ./googleMeetSelectors — each is a list so we can
+// fall back through UI variants. On ANY failure the bot logs the page
+// title/text and writes a screenshot (see capturePageState) so a
+// blind timeout becomes a real diagnosis.
+//
+// Flow modelled on Vexa's googlemeet/join.ts + admission.ts: enter
+// guest name → mute mic+cam → click join → poll for admission OR
+// rejection, distinguishing "still in the lobby" from "admitted but
+// some lobby DOM lingered" from "kicked out".
 
-import { chromium, type Browser, type Page, type Locator } from 'playwright';
+import { chromium, type Browser, type Page } from 'playwright';
 import type { MeetingBot, BotOptions } from './types.js';
 import { screenshotPath } from '../paths.js';
 import { applyGoogleSession } from '../googleSession.js';
+import {
+  nameInputSelectors,
+  joinButtonSelectors,
+  microphoneOffSelectors,
+  cameraOffSelectors,
+  admittedIndicators,
+  waitingRoomIndicators,
+  rejectionIndicators,
+  endOfCallIndicators,
+  leaveButtonSelectors,
+} from './googleMeetSelectors.js';
 
 // How long to wait for the host to admit the bot.
 const ADMIT_TIMEOUT_MS = 2 * 60 * 1000;
 // How long to wait for a pre-join element (name field, join button).
-const ELEMENT_TIMEOUT_MS = 20_000;
+const ELEMENT_TIMEOUT_MS = 30_000;
+// Admission-poll cadence.
+const ADMIT_POLL_INTERVAL_MS = 2_000;
 
 export class GoogleMeetBot implements MeetingBot {
   readonly platform = 'google-meet';
@@ -71,41 +89,42 @@ export class GoogleMeetBot implements MeetingBot {
       this.log(`navigating to ${meetingUrl}`);
       await page.goto(meetingUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 });
 
-      // A fresh browser hitting a Google domain is often bounced through
+      // Brief settle so the SPA can render the pre-join.
+      await page.waitForTimeout(1_500);
+
+      // A fresh browser hitting a Google domain may be bounced through
       // a cookie-consent interstitial first.
       await this.dismissConsent();
 
       this.log(`page ready: "${await page.title()}" @ ${page.url()}`);
 
-      // ── Guest name (best-effort — absent on sign-in-only meetings). ──
-      try {
-        const nameInput = page.getByRole('textbox', { name: /your name/i }).first();
-        await nameInput.waitFor({ state: 'visible', timeout: ELEMENT_TIMEOUT_MS });
-        await nameInput.fill(displayName);
-        this.log('filled the guest name');
-      } catch {
-        this.log('no guest-name field found (continuing anyway)');
+      // Catch rejection at the pre-join stage — e.g. anonymous bot
+      // blocked with "You can't join this video call".
+      if (await this.anyVisible(rejectionIndicators)) {
+        throw new Error('Meet rejected the bot before it could join (rejection screen on the pre-join page)');
+      }
+
+      // ── Guest name (only required for the anonymous flow). ──
+      if (signedIn) {
+        this.log('signed-in mode: skipping name input');
+      } else {
+        await this.fillName(displayName);
       }
 
       // ── Turn the microphone and camera off before joining. ──
-      await this.tryClick(
-        page.getByRole('button', { name: /turn off microphone/i }), 'mic off');
-      await this.tryClick(
-        page.getByRole('button', { name: /turn off camera/i }), 'camera off');
+      // Best-effort; some account states pre-mute and these buttons
+      // either aren't there or are already in the "off" state.
+      await this.tryClickAny(microphoneOffSelectors, 'mic off');
+      await this.tryClickAny(cameraOffSelectors, 'camera off');
 
       // ── Join. ──
       this.log('looking for the join button');
-      const joinButton = page
-        .getByRole('button', { name: /ask to join|join now|join meeting/i })
-        .first();
-      await joinButton.waitFor({ state: 'visible', timeout: ELEMENT_TIMEOUT_MS });
-      await joinButton.click();
+      await this.clickAnyOrThrow(joinButtonSelectors, 'join button', ELEMENT_TIMEOUT_MS);
       this.log('clicked join — waiting to be admitted');
       callbacks.onWaitingAdmit?.();
 
-      // ── Wait for the host to admit the bot. ──
-      const leaveButton = page.getByRole('button', { name: /leave call/i }).first();
-      await leaveButton.waitFor({ state: 'visible', timeout: ADMIT_TIMEOUT_MS });
+      // ── Poll for admission. ──
+      await this.waitForAdmission(ADMIT_TIMEOUT_MS);
       this.log('admitted — the bot is in the meeting');
       callbacks.onAdmitted?.();
 
@@ -120,9 +139,106 @@ export class GoogleMeetBot implements MeetingBot {
     }
   }
 
-  /** Snapshot what the page actually shows — turns a blind timeout into
-   *  a real diagnosis. Logs + screenshots, and returns a short suffix
-   *  appended to the error message (so it surfaces via GET /sessions/:id). */
+  /** Fill the guest-name input on the pre-join screen. Tries each
+   *  selector in order and throws if none of them appear. */
+  private async fillName(displayName: string): Promise<void> {
+    const page = this.page!;
+    for (const selector of nameInputSelectors) {
+      try {
+        const input = page.locator(selector).first();
+        await input.waitFor({ state: 'visible', timeout: ELEMENT_TIMEOUT_MS / nameInputSelectors.length });
+        await input.fill(displayName);
+        this.log(`filled the guest name via ${selector}`);
+        return;
+      } catch {
+        /* try the next */
+      }
+    }
+    throw new Error('could not find the guest-name input on the Meet pre-join screen');
+  }
+
+  /** Click the first locator in `selectors` that becomes visible
+   *  within `timeoutMs`. Throws if none are clickable. */
+  private async clickAnyOrThrow(
+    selectors: string[],
+    label: string,
+    timeoutMs: number,
+  ): Promise<void> {
+    const page = this.page!;
+    const perSelector = Math.max(2_000, Math.floor(timeoutMs / selectors.length));
+    let lastErr: unknown = null;
+    for (const selector of selectors) {
+      try {
+        const loc = page.locator(selector).first();
+        await loc.waitFor({ state: 'visible', timeout: perSelector });
+        await loc.click({ timeout: 5_000 });
+        this.log(`clicked ${label} via ${selector}`);
+        return;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw new Error(`could not click ${label}: ${
+      lastErr instanceof Error ? lastErr.message.split('\n')[0] : 'no matching selector'
+    }`);
+  }
+
+  /** Try clicking the first locator in `selectors` that's visible
+   *  within a tight per-selector budget. Never throws. */
+  private async tryClickAny(selectors: string[], label: string): Promise<void> {
+    const page = this.page!;
+    for (const selector of selectors) {
+      try {
+        const loc = page.locator(selector).first();
+        if (!(await loc.isVisible({ timeout: 1_500 }).catch(() => false))) continue;
+        await loc.click({ timeout: 3_000 });
+        this.log(`clicked: ${label} (${selector})`);
+        return;
+      } catch {
+        /* try next */
+      }
+    }
+    this.log(`skipped: ${label} (no matching selector)`);
+  }
+
+  /** Return true if ANY of the selectors is currently visible. */
+  private async anyVisible(selectors: string[]): Promise<boolean> {
+    const page = this.page;
+    if (!page) return false;
+    for (const selector of selectors) {
+      try {
+        if (await page.locator(selector).first().isVisible({ timeout: 500 })) return true;
+      } catch {
+        /* continue */
+      }
+    }
+    return false;
+  }
+
+  /** Poll until either an admission indicator is visible (success), a
+   *  rejection indicator is visible (throw), or the timeout elapses
+   *  (throw). Distinguishes "still in lobby" from "admitted but with
+   *  stale lobby DOM" by checking the waiting-room indicators as a
+   *  negative guard before declaring admission. */
+  private async waitForAdmission(timeoutMs: number): Promise<void> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (await this.anyVisible(rejectionIndicators)) {
+        throw new Error('Meet rejected the bot (admin denied entry, or meeting is closed)');
+      }
+      const inLobby = await this.anyVisible(waitingRoomIndicators);
+      if (!inLobby && (await this.anyVisible(admittedIndicators))) {
+        return;
+      }
+      await this.page!.waitForTimeout(ADMIT_POLL_INTERVAL_MS);
+    }
+    throw new Error(`timed out waiting for admission after ${Math.round(timeoutMs / 1000)}s`);
+  }
+
+  /** Snapshot what the page actually shows — turns a blind timeout
+   *  into a real diagnosis. Logs + screenshots, and returns a short
+   *  suffix appended to the error message (so it surfaces via
+   *  GET /sessions/:id). */
   private async capturePageState(): Promise<string> {
     const page = this.page;
     if (!page) return '';
@@ -171,25 +287,12 @@ export class GoogleMeetBot implements MeetingBot {
     this.log('could not clear the consent page');
   }
 
-  /** Click a locator if present; never throws. */
-  private async tryClick(locator: Locator, label: string): Promise<void> {
-    try {
-      await locator.first().click({ timeout: 4000 });
-      this.log(`clicked: ${label}`);
-    } catch {
-      this.log(`skipped: ${label} (not found)`);
-    }
-  }
-
   /** Poll for Meet's "you've left / been removed" screen. */
   private watchForEnd(): void {
     const check = async () => {
       if (!this.page || this.left) return;
       try {
-        const ended = this.page
-          .getByText(/you.{0,3}ve left the meeting|removed from the meeting|meeting.{0,3}s ended/i)
-          .first();
-        if (await ended.isVisible()) {
+        if (await this.anyVisible(endOfCallIndicators)) {
           this.log('meeting ended / bot removed');
           this.opts.callbacks.onLeft?.();
           return;
@@ -206,9 +309,17 @@ export class GoogleMeetBot implements MeetingBot {
     if (this.left) return;
     this.left = true;
 
-    if (this.page) {
-      await this.tryClick(
-        this.page.getByRole('button', { name: /leave call/i }), 'leave call');
+    if (this.page && !this.page.isClosed()) {
+      const page = this.page;
+      for (const selector of leaveButtonSelectors) {
+        try {
+          await page.locator(selector).first().click({ timeout: 3_000 });
+          this.log(`clicked leave via ${selector}`);
+          break;
+        } catch {
+          /* try the next */
+        }
+      }
     }
     this.page = null;
 

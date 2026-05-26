@@ -14,6 +14,7 @@ import type { SessionEvent, SessionState, SessionSummary, StartSessionRequest } 
 import { detectPlatform, type MeetingBot, type BotCallbacks, type BotOptions } from './platforms/types.js';
 import { GoogleMeetBot } from './platforms/googleMeet.js';
 import { MicrosoftTeamsBot } from './platforms/microsoftTeams.js';
+import { ZoomBot } from './platforms/zoom.js';
 import { startAudioCapture, type AudioCapture } from './audio.js';
 import { DeepgramLiveClient } from './deepgram.js';
 import { translate } from './translate.js';
@@ -84,8 +85,10 @@ export class Session {
       this.bot = new GoogleMeetBot(botOptions);
     } else if (this.platform === 'teams') {
       this.bot = new MicrosoftTeamsBot(botOptions);
+    } else if (this.platform === 'zoom') {
+      this.bot = new ZoomBot(botOptions);
     } else {
-      this.fail(`Unsupported platform "${this.platform}". Supported: google-meet, teams.`);
+      this.fail(`Unsupported platform "${this.platform}". Supported: google-meet, teams, zoom.`);
       return;
     }
 

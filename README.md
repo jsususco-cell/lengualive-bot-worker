@@ -5,9 +5,15 @@ cannot be: a long-running, Dockerized service that sends a bot into a
 live video meeting, captures the meeting audio, and transcribes +
 translates it in real time.
 
-Today it supports **Google Meet** and **Microsoft Teams** (anonymous
-guest join — sign-in support is a roadmap item). Zoom is designed for
-but not yet implemented (see `src/platforms/`).
+Today it supports **Google Meet**, **Microsoft Teams**, and **Zoom**.
+Google Meet uses a signed-in saved-session (see [`.env.example`](./.env.example)
+— anonymous Meet bots are blocked). Teams and Zoom use the anonymous /
+guest join flow; sign-in support for those is a roadmap item.
+
+The join flow is modelled on Vexa-ai/vexa's `vexa-bot` (per-platform
+`join.ts` + curated selector lists) but trimmed to just what we need
+to get a Playwright Chromium into the meeting — no virtual cameras,
+TTS, S3 sync, or per-speaker capture pipelines.
 
 ---
 
@@ -130,14 +136,18 @@ fly deploy
 
 This is an **MVP scaffold**. Honest list of what to expect:
 
-- **Selectors are fragile.** Google Meet has no bot API; the join flow
-  in `src/platforms/googleMeet.ts` automates the real web UI. Every
-  selector marked `TODO(selector)` must be verified against the live
-  page and will need maintenance whenever Google changes Meet.
+- **Selectors are fragile.** None of these platforms have a bot API;
+  every join is the real web UI. Curated selector lists live in
+  `src/platforms/{googleMeet,microsoftTeams,zoom}Selectors.ts` and
+  will need maintenance whenever a platform changes its UI.
 - **The host must admit the bot.** A guest bot lands in the waiting
   room; if nobody admits it within 2 minutes the session errors out.
-- **Sign-in-only meetings won't work** with guest join. Supporting
-  those needs a logged-in Google account for the bot (a future option).
+- **Zoom: host must have started the meeting.** Until the host
+  starts, Zoom shows "This meeting link is invalid" — the bot retries
+  for up to 10 min, then gives up.
+- **Sign-in-only meetings need a saved session.** Google Meet has
+  `GOOGLE_COOKIES_B64` for this; Teams and Zoom equivalents are a
+  roadmap item.
 - **One bot per container.** There is a single PulseAudio sink, so one
   meeting at a time per machine. Concurrency = more machines.
 - **State is in-memory.** A restart drops all sessions. Persistence is
