@@ -13,10 +13,10 @@
 // rejection, distinguishing "still in the lobby" from "admitted but
 // some lobby DOM lingered" from "kicked out".
 
-import { chromium, type Browser, type Page } from 'playwright';
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import type { MeetingBot, BotOptions } from './types.js';
 import { screenshotPath } from '../paths.js';
-import { applyGoogleSession } from '../googleSession.js';
+import { applyGoogleSession, saveGoogleSession } from '../googleSession.js';
 import {
   nameInputSelectors,
   joinButtonSelectors,
@@ -40,6 +40,7 @@ export class GoogleMeetBot implements MeetingBot {
   readonly platform = 'google-meet';
 
   private browser: Browser | null = null;
+  private context: BrowserContext | null = null;
   private page: Page | null = null;
   private left = false;
 
@@ -75,6 +76,7 @@ export class GoogleMeetBot implements MeetingBot {
         // keeps Meet from showing its "unsupported browser" downgrade.
         locale: 'en-US',
       });
+      this.context = context;
 
       // Inject the saved Google session, if one is configured. Meet
       // refuses anonymous bots, so this is what actually gets us in.
@@ -126,6 +128,12 @@ export class GoogleMeetBot implements MeetingBot {
       // ── Poll for admission. ──
       await this.waitForAdmission(ADMIT_TIMEOUT_MS);
       this.log('admitted — the bot is in the meeting');
+
+      // Persist any anti-replay cookies Google rotated during the join.
+      // Doing this on admission (not just on leave) means a crash mid-call
+      // still leaves the NEXT bot run with up-to-date cookies.
+      await saveGoogleSession(context).catch(() => { /* best effort */ });
+
       callbacks.onAdmitted?.();
 
       this.watchForEnd();
@@ -322,6 +330,13 @@ export class GoogleMeetBot implements MeetingBot {
       }
     }
     this.page = null;
+
+    // Save once more before tearing down — captures any post-join cookie
+    // rotation while the bot was in the meeting.
+    if (this.context) {
+      await saveGoogleSession(this.context).catch(() => { /* best effort */ });
+    }
+    this.context = null;
 
     try {
       await this.browser?.close();

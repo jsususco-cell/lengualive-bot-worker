@@ -27,3 +27,12 @@ kill_timeout = '2m0s'
   # Chromium + audio stack is memory-hungry; start here and adjust.
   size = 'shared-cpu-2x'
   memory = '2gb'
+
+# Persistent storage for the bot's Google session. Google rotates the
+# anti-replay cookies (__Secure-3PSIDTS, *SIDCC) within minutes; a
+# frozen GOOGLE_COOKIES_B64 export goes stale almost immediately. We
+# write the rotated cookies here after each successful join so the
+# next bot run starts from fresh server-blessed cookies.
+[[mounts]]
+  source = 'lengualive_data'
+  destination = '/data'
